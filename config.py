@@ -69,9 +69,36 @@ ROI_LANE_WIDTH_PX = 300                 # full road width in BEV (dst spans 0.20
 ROI_LOOKAHEAD_MIN_PX = 60
 ROI_LOOKAHEAD_MAX_PX = IMG_H - 1       # cap at image height
 
+# ROI lane-awareness (steering-based approximation).
+# When driving straight, use a narrower ROI to ignore adjacent-lane traffic.
+# When steering strongly (lane-change), shift the ROI center and widen it.
+ROI_WIDTH_MIN_PX = 140
+ROI_WIDTH_MAX_PX = 360
+ROI_STEER_CENTER_GAIN_PX = 220          # pixels of ROI center shift at steer=1.0
+ROI_STEER_WIDTH_GAIN_PX = 260           # additional width at steer=1.0
+ROI_STEER_LPF_ALPHA = 0.25              # low-pass filter for steer (0..1)
+
 # NPC traffic settings
 NPC_VEHICLE_COUNT = 20   # number of NPC vehicles to spawn at startup
 TM_PORT = 8000           # Traffic Manager port (must match CARLA server)
+
+# Scenario settings (Option 1: thesis-safe, no overtaking required)
+# Spawn a stopped vehicle ahead in the ego lane to trigger the safety layer.
+SCENARIO_STOPPED_VEHICLE = True
+STOPPED_VEHICLE_DISTANCE_M = 22.0
+DISABLE_EXTRA_NPC_TRAFFIC = True
+
+# Controller/behavior toggles
+# - For a clean thesis safety demonstration, keep lane changes disabled and latch autopilot off
+#   after the first safety trigger (vehicle will stop and stay stopped).
+# - For normal driving behavior (bypass/continue), enable lane changes and do not latch.
+EGO_ALLOW_LANE_CHANGE = True
+LATCH_AUTOPILOT_AFTER_OVERRIDE = False
+
+# End the run automatically once the safety layer achieves a full stop.
+STOP_SIM_ON_SUCCESS = False
+SUCCESS_STOP_SPEED_MPS = 0.20
+SUCCESS_HOLD_TIME_SEC = 1.5
 
 # Simulation settings
 EMERGENCY_BRAKE = 1.0

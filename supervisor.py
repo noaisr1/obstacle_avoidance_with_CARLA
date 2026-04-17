@@ -11,14 +11,20 @@ from config import (
     ROI_LOOKAHEAD_MIN_PX,
     ROI_LANE_WIDTH_PX,
     ROI_SPEED_FACTOR_PX_PER_MPS,
+    ROI_STEER_CENTER_GAIN_PX,
+    ROI_STEER_LPF_ALPHA,
+    ROI_STEER_WIDTH_GAIN_PX,
+    ROI_WIDTH_MAX_PX,
+    ROI_WIDTH_MIN_PX,
     EMERGENCY_BRAKE,
 )
 
 class SafetySupervisor:
     def __init__(self):
         self.brake_value = EMERGENCY_BRAKE
+        self._steer_lpf = 0.0
 
-    def decide(self, bev_map, speed_mps):
+    def decide(self, bev_map, speed_mps, steer=0.0):
         """
         Analyze the BEV obstacle map with a speed-dependent ROI.
 
@@ -38,16 +44,26 @@ class SafetySupervisor:
         look_ahead_px = int(ROI_BASE_BUFFER_PX + (speed_mps * ROI_SPEED_FACTOR_PX_PER_MPS))
         look_ahead_px = max(ROI_LOOKAHEAD_MIN_PX, min(look_ahead_px, ROI_LOOKAHEAD_MAX_PX, h))
         
-        # Define the lane ROI at the bottom of the BEV map (ego position).
-        # The road area in the BEV is mapped to x in [0.20*w, 0.80*w] by IPM_DST_POINTS_NORM.
-        # The ROI is centered inside that mapped road band rather than blindly at the image center,
-        # so it always covers the full drivable area even when the ego is not dead-center.
+        # Define a steering-aware ROI.
+        # - When driving straight, keep ROI narrow to ignore adjacent-lane vehicles.
+        # - When changing lanes (|steer| grows), shift ROI center toward the turn direction and widen it.
         road_x_min = int(0.20 * w)
         road_x_max = int(0.80 * w)
         road_center = (road_x_min + road_x_max) // 2
-        lane_half = min(ROI_LANE_WIDTH_PX // 2, (road_x_max - road_x_min) // 2)
-        x_start = max(road_x_min, road_center - lane_half)
-        x_end = min(road_x_max, road_center + lane_half)
+
+        steer = float(np.clip(steer, -1.0, 1.0))
+        self._steer_lpf = (1.0 - ROI_STEER_LPF_ALPHA) * self._steer_lpf + ROI_STEER_LPF_ALPHA * steer
+
+        center_shift = int(self._steer_lpf * ROI_STEER_CENTER_GAIN_PX)
+        roi_center = int(np.clip(road_center + center_shift, road_x_min, road_x_max))
+
+        width = int(ROI_WIDTH_MIN_PX + abs(self._steer_lpf) * ROI_STEER_WIDTH_GAIN_PX)
+        width = int(np.clip(width, ROI_WIDTH_MIN_PX, ROI_WIDTH_MAX_PX))
+        width = min(width, road_x_max - road_x_min)
+        half = width // 2
+
+        x_start = max(road_x_min, roi_center - half)
+        x_end = min(road_x_max, roi_center + half)
         y_start = max(0, h - look_ahead_px)
         
         roi = bev_map[y_start : h, x_start : x_end]

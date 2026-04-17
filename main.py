@@ -13,12 +13,15 @@ import os
 import numpy as np
 from config import (
     IMG_W, IMG_H, FOV, RUN_MODE, RUN_TIME_LIMIT_SEC, LOG_DT_SEC,
-    NPC_VEHICLE_COUNT, TM_PORT, DEBUG_OUTPUT_DIR
+    NPC_VEHICLE_COUNT, TM_PORT, DEBUG_OUTPUT_DIR,
+    SCENARIO_STOPPED_VEHICLE, STOPPED_VEHICLE_DISTANCE_M, DISABLE_EXTRA_NPC_TRAFFIC,
+    STOP_SIM_ON_SUCCESS, SUCCESS_STOP_SPEED_MPS, SUCCESS_HOLD_TIME_SEC,
+    EGO_ALLOW_LANE_CHANGE, LATCH_AUTOPILOT_AFTER_OVERRIDE,
 )
 from sim_setup import (
     connect, get_world, spawn_ego,
     attach_segmentation_camera, attach_collision_sensor,
-    spawn_npc_vehicles,
+    spawn_npc_vehicles, spawn_stopped_vehicle_ahead,
 )
 from perception import SegmentationPerception
 from supervisor import SafetySupervisor
@@ -45,16 +48,32 @@ def main():
     # Setup Traffic Manager in Sync Mode
     tm = client.get_trafficmanager(TM_PORT)
     tm.set_synchronous_mode(True)
+    # Option 1 scenario: discourage/disable overtakes.
+    tm.global_percentage_speed_difference(0.0)
 
     spectator = world.get_spectator()
 
-    # 2. Spawn Ego and NPCs
+    # 2. Spawn Ego and Scenario Actors
     ego, _ = spawn_ego(world)
-    npc_list = spawn_npc_vehicles(world, n=NPC_VEHICLE_COUNT, tm_port=TM_PORT)
+    npc_list = []
+    stopped_vehicle = None
+
+    if not DISABLE_EXTRA_NPC_TRAFFIC and NPC_VEHICLE_COUNT > 0:
+        npc_list = spawn_npc_vehicles(world, n=NPC_VEHICLE_COUNT, tm_port=TM_PORT)
+
+    if SCENARIO_STOPPED_VEHICLE:
+        stopped_vehicle = spawn_stopped_vehicle_ahead(
+            world, ego, distance_m=STOPPED_VEHICLE_DISTANCE_M
+        )
     
     # Start driving
     ego.set_autopilot(True, TM_PORT)
     autopilot_enabled = True
+    # Configure whether ego is allowed to bypass obstacles (lane change).
+    try:
+        tm.auto_lane_change(ego, bool(EGO_ALLOW_LANE_CHANGE))
+    except Exception:
+        pass
 
     # 3. Sensor Setup
     perception = SegmentationPerception(IMG_W, IMG_H)
@@ -79,6 +98,8 @@ def main():
     # Hysteresis for stability
     clear_streak = 0
     clear_streak_required = 10 
+    override_latched = False
+    success_stop_time = None
     frames_elapsed = 0
     max_frames = int(RUN_TIME_LIMIT_SEC / LOG_DT_SEC)
 
@@ -92,14 +113,15 @@ def main():
             ego_tf = ego.get_transform()
             v_forward = ego_tf.get_forward_vector()
             # Position: 10m back, 5m up
-            spec_loc = ego_tf.location - v_forward * 10 + carla.Location(z=5)
-            spec_rot = carla.Rotation(pitch=-20, yaw=ego_tf.rotation.yaw, roll=0)
+            spec_loc = ego_tf.location - v_forward * 7 + carla.Location(z=15)
+            spec_rot = carla.Rotation(pitch=-45, yaw=ego_tf.rotation.yaw, roll=0)
             spectator.set_transform(carla.Transform(spec_loc, spec_rot))
 
             # --- Perception & Control ---
             bev_frame = perception.get_bev_map()
             bev_visual = perception.last_bev_visual
             speed = get_speed(ego)
+            steer = float(getattr(ego.get_control(), "steer", 0.0))
 
             # Debug Visualization
             if bev_visual is not None:
@@ -112,10 +134,13 @@ def main():
             min_obstacle_dist_px = None
 
             if RUN_MODE.upper() == "SUPERVISOR":
-                override, control, roi_lookahead_px, min_obstacle_dist_px = supervisor.decide(bev_frame, speed)
+                override, control, roi_lookahead_px, min_obstacle_dist_px = supervisor.decide(
+                    bev_frame, speed, steer=steer
+                )
                 
                 if override:
                     clear_streak = 0
+                    override_latched = True
                     if autopilot_enabled:
                         ego.set_autopilot(False)
                         autopilot_enabled = False
@@ -126,6 +151,24 @@ def main():
                         ego.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
                         ego.set_autopilot(True, TM_PORT)
                         autopilot_enabled = True
+
+                # Optional: latch authority after the first trigger (thesis mode).
+                # This prevents autopilot from attempting to steer around the obstacle.
+                if SCENARIO_STOPPED_VEHICLE and LATCH_AUTOPILOT_AFTER_OVERRIDE and override_latched:
+                    if autopilot_enabled:
+                        ego.set_autopilot(False)
+                        autopilot_enabled = False
+
+                # End the scenario once a full stop is achieved and held.
+                if SCENARIO_STOPPED_VEHICLE and STOP_SIM_ON_SUCCESS and override_latched:
+                    if speed <= SUCCESS_STOP_SPEED_MPS:
+                        if success_stop_time is None:
+                            success_stop_time = frames_elapsed * LOG_DT_SEC
+                        elif (frames_elapsed * LOG_DT_SEC) - success_stop_time >= SUCCESS_HOLD_TIME_SEC:
+                            print("[main] Success: full stop achieved. Ending run.")
+                            break
+                    else:
+                        success_stop_time = None
 
             # --- Metrics Logging ---
             metrics.log_step(
@@ -153,6 +196,11 @@ def main():
         camera.stop()
         collision_sensor.stop()
         ego.destroy()
+        if stopped_vehicle is not None:
+            try:
+                stopped_vehicle.destroy()
+            except Exception:
+                pass
         for npc in npc_list:
             try:
                 npc.destroy()

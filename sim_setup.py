@@ -97,6 +97,56 @@ def spawn_npc_vehicles(world, n=20, tm_port=8000):
     return npc_list
 
 
+def spawn_stopped_vehicle_ahead(world, ego, distance_m=22.0):
+    """
+    Spawn a stationary obstacle vehicle in the ego's current lane, distance_m ahead.
+    Returns the spawned actor or None if spawning fails.
+    """
+    m = world.get_map()
+    ego_tf = ego.get_transform()
+    ego_wp = m.get_waypoint(
+        ego_tf.location,
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving,
+    )
+
+    # Walk forward along the lane centerline.
+    wp = ego_wp
+    remaining = float(distance_m)
+    step = 2.0
+    while remaining > 0.0:
+        nxt = wp.next(min(step, remaining))
+        if not nxt:
+            break
+        wp = nxt[0]
+        remaining -= step
+
+    spawn_tf = wp.transform
+    spawn_tf.location.z += 0.2  # reduce ground intersection failures
+
+    bp_lib = world.get_blueprint_library()
+    # Prefer a noticeable vehicle, but fall back safely.
+    candidates = (
+        bp_lib.filter("vehicle.*carlacola*")
+        or bp_lib.filter("vehicle.*model3*")
+        or bp_lib.filter("vehicle.*")
+    )
+    if not candidates:
+        print("[sim_setup] Warning: no vehicle blueprints found for stopped vehicle.")
+        return None
+
+    bp = random.choice(candidates)
+    stopped = world.try_spawn_actor(bp, spawn_tf)
+    if stopped is None:
+        print("[sim_setup] Warning: failed to spawn stopped vehicle ahead.")
+        return None
+
+    stopped.set_autopilot(False)
+    stopped.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=True))
+    print(f"[sim_setup] Spawned stopped vehicle {distance_m:.1f} m ahead.")
+    return stopped
+
+
 def attach_collision_sensor(world, ego):
     """Attach a collision sensor to the ego vehicle."""
     bp_lib = world.get_blueprint_library()
