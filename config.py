@@ -1,47 +1,80 @@
 """
 Global configuration file for the obstacle avoidance project.
-
-This version uses CARLA built-in autopilot (no 'agents' dependency).
-The Safety Supervisor can override autopilot control with emergency braking.
+Updated to include Inverse Perspective Mapping (IPM) and Dynamic ROI parameters.
 """
 
 from pathlib import Path
 
-# Path to CARLA installation (WindowsNoEditor folder)
-CARLA_ROOT = Path(r"C:\CARLA\WindowsNoEditor")
+# Output / debug
+DEBUG_OUTPUT_DIR = Path("debug_output")
+DEBUG_SAVE_BEV_FIRST_N = 5     # save first N frames for quick sanity-check
+DEBUG_SAVE_BEV_EVERY_N = 100   # then save one frame every N frames (~5 s at 20 Hz)
 
 # CARLA server connection
 HOST = "127.0.0.1"
 PORT = 2000
-
-# Map name (set to None to keep current map)
-MAP_NAME = None  # Example: "Town10HD_Opt"
+MAP_NAME = None
 
 # Camera parameters
 IMG_W = 800
 IMG_H = 450
 FOV = 90
 
-# Region Of Interest (ROI) in normalized image coordinates
-ROI_X_MIN = 0.40
-ROI_X_MAX = 0.60
-ROI_Y_MIN = 0.35
-ROI_Y_MAX = 0.80
+# Semantic segmentation obstacle label IDs for CARLA 0.9.14+.
+# NOTE: CARLA 0.9.14 renumbered all semantic labels.
+# Old (<=0.9.13): Pedestrians=4, Vehicles=10  <-- frequently cited but WRONG for 0.9.14+
+# Correct (0.9.14+):
+#   12 = Pedestrians, 13 = Rider, 14 = Car, 15 = Truck,
+#   16 = Bus, 18 = Motorcycle, 19 = Bicycle
+OBSTACLE_LABEL_IDS = [12, 13, 14, 15, 16, 18, 19]
 
-# Obstacle detection threshold:
-# percentage of ROI pixels classified as vehicle or pedestrian
-OBSTACLE_RATIO_THRESHOLD = 0.06
+# IPM (Inverse Perspective Mapping) points.
+# Points are normalized (0.0..1.0) in image coordinates.
+#
+# Point ordering convention (MUST match for src and dst):
+#   [bottom_left, bottom_right, top_right, top_left]
+#
+# Calibrated via ground-plane projection for:
+#   Camera pose: x=1.6 m, z=1.7 m, pitch=-15 deg, FOV=90, W=800, H=450
+#   Intrinsics:  f=400, cx=400, cy=225
+#
+# Ground distances mapped by these points:
+#   Near  (y_src=0.65, ~5.5 m)  ->  BEV bottom  (y_dst=0.98)
+#   Far   (y_src=0.33, ~25 m)   ->  BEV top     (y_dst=0.02)
+# Lane width at near: ±2.5 m (x=0.20..0.80)
+# Lane width at far:  ±3.5 m narrows to (x=0.42..0.58)
+IPM_SRC_POINTS_NORM = [
+    [0.26, 0.65],  # bottom_left  (~5.5 m ahead, ±1.75 m -- ~1 lane width at near field)
+    [0.74, 0.65],  # bottom_right (~5.5 m ahead, ±1.75 m)
+    [0.57, 0.33],  # top_right    (~25 m  ahead, ±3.5 m)
+    [0.43, 0.33],  # top_left     (~25 m  ahead, ±3.5 m)
+]
 
-# Emergency braking strength
+# Destination rectangle (normalized) defining where the road lands in the BEV image.
+# Ego vehicle is at the bottom-center; forward direction is toward the top.
+IPM_DST_POINTS_NORM = [
+    [0.20, 0.98],  # bottom_left
+    [0.80, 0.98],  # bottom_right
+    [0.80, 0.02],  # top_right
+    [0.20, 0.02],  # top_left
+]
+
+# Dynamic ROI parameters (distances are in pixels on the BEV map).
+# The BEV covers ~5.5 m (bottom) to ~25 m (top) = ~19.5 m over IMG_H pixels.
+# Scale: ~0.043 m/px. Stopping distance at 10 m/s ≈ 17 m ≈ 395 px.
+# Formula: look_ahead_px = ROI_BASE_BUFFER_PX + speed_mps * ROI_SPEED_FACTOR_PX_PER_MPS
+ROI_BASE_BUFFER_PX = 100
+ROI_SPEED_FACTOR_PX_PER_MPS = 20       # ≈ 0.86 m per m/s -- tuned for urban speeds
+ROI_LANE_WIDTH_PX = 300                 # full road width in BEV (dst spans 0.20-0.80 * 800 = 480 px)
+ROI_LOOKAHEAD_MIN_PX = 60
+ROI_LOOKAHEAD_MAX_PX = IMG_H - 1       # cap at image height
+
+# NPC traffic settings
+NPC_VEHICLE_COUNT = 20   # number of NPC vehicles to spawn at startup
+TM_PORT = 8000           # Traffic Manager port (must match CARLA server)
+
+# Simulation settings
 EMERGENCY_BRAKE = 1.0
-
-# Experiment switches:
-# - BASELINE: ego uses autopilot only (no supervisor override)
-# - SUPERVISOR: ego uses autopilot + supervisor override on risk
-RUN_MODE = "SUPERVISOR"  # "BASELINE" or "SUPERVISOR"
-
-# Run time limit (seconds). Stop run after this duration even if no destination exists.
-RUN_TIME_LIMIT_SEC = 90
-
-# Logging interval (seconds)
+RUN_MODE = "SUPERVISOR" # "BASELINE" or "SUPERVISOR"
+RUN_TIME_LIMIT_SEC = 120
 LOG_DT_SEC = 0.05

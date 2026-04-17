@@ -16,6 +16,7 @@ class MetricsLogger:
 
         self.collision_count = 0
         self.last_collision_frame = -1
+        self._collision_flag = 0
 
         self.emergency_override_count = 0  # number of timesteps where override was active
 
@@ -28,15 +29,38 @@ class MetricsLogger:
             "obstacle_ratio",
             "override",
             "brake",
-            "collision"
+            "collision",
+            "roi_lookahead_px",
+            "min_obstacle_dist_px",
         ])
 
     def on_collision(self, event):
         """Callback for collision events."""
         self.collision_count += 1
         self.last_collision_frame = getattr(event, "frame", -1)
+        self._collision_flag = 1
 
-    def log_step(self, time_sec, frame, speed_mps, obstacle_ratio, override, brake, collision):
+    def consume_collision_flag(self):
+        """
+        Return whether a collision occurred since the last log step, then clear it.
+        This ensures every collision event is reflected in the metrics stream.
+        """
+        flag = int(self._collision_flag)
+        self._collision_flag = 0
+        return flag
+
+    def log_step(
+        self,
+        time_sec,
+        frame,
+        speed_mps,
+        obstacle_ratio,
+        override,
+        brake,
+        collision,
+        roi_lookahead_px,
+        min_obstacle_dist_px,
+    ):
         """Write a single timestep to CSV and update counters."""
         if override:
             self.emergency_override_count += 1
@@ -48,7 +72,9 @@ class MetricsLogger:
             f"{obstacle_ratio:.5f}",
             int(override),
             f"{brake:.3f}",
-            int(collision)
+            int(collision),
+            int(roi_lookahead_px),
+            "" if min_obstacle_dist_px is None else int(min_obstacle_dist_px),
         ])
 
     def close(self):

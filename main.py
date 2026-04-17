@@ -1,140 +1,162 @@
 """
-Main entry point for the obstacle avoidance project (no CARLA agents).
-
-This script:
-- Connects to CARLA
-- Spawns an ego vehicle
-- Enables CARLA built-in autopilot for baseline driving
-- Attaches a semantic segmentation camera and collision sensor
-- Computes an obstacle ratio in a forward ROI
-- Uses a Safety Supervisor to override autopilot with emergency braking
-- Logs metrics to CSV for evaluation
-
-RUN_MODE controls whether the supervisor is active:
-- BASELINE: autopilot only
-- SUPERVISOR: autopilot + supervisor override
+Main simulation loop for the CARLA Obstacle Avoidance project.
+Coordinates sensors, perception, and safety supervision.
+Updated with:
+- Synchronous Mode (for smooth camera and deterministic results)
+- Automatic Chase Cam (Spectator tracking)
+- Dynamic ROI Safety Logic
 """
 
-import math
-import time
-
+import carla
+import cv2
+import os
+import numpy as np
 from config import (
-    IMG_W, IMG_H, FOV,
-    ROI_X_MIN, ROI_X_MAX, ROI_Y_MIN, ROI_Y_MAX,
-    RUN_MODE, RUN_TIME_LIMIT_SEC, LOG_DT_SEC
+    IMG_W, IMG_H, FOV, RUN_MODE, RUN_TIME_LIMIT_SEC, LOG_DT_SEC,
+    NPC_VEHICLE_COUNT, TM_PORT, DEBUG_OUTPUT_DIR
 )
 from sim_setup import (
     connect, get_world, spawn_ego,
-    attach_segmentation_camera, attach_collision_sensor
+    attach_segmentation_camera, attach_collision_sensor,
+    spawn_npc_vehicles,
 )
 from perception import SegmentationPerception
 from supervisor import SafetySupervisor
 from metrics import MetricsLogger
 
 
-def vector_length(v):
-    """Compute Euclidean length of a CARLA vector."""
-    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+def get_speed(vehicle):
+    """Calculate vehicle speed (m/s)."""
+    v = vehicle.get_velocity()
+    return (v.x ** 2 + v.y ** 2 + v.z ** 2) ** 0.5
 
 
 def main():
-    # Connect and load world
+    # 1. Connection and World Setup
     client = connect()
     world = get_world(client)
+    
+    # Enable Synchronous Mode for smooth physics and camera
+    settings = world.get_settings()
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = LOG_DT_SEC # Matches our target Hz
+    world.apply_settings(settings)
 
-    # Spawn ego vehicle
-    ego, _spawn_points = spawn_ego(world)
+    # Setup Traffic Manager in Sync Mode
+    tm = client.get_trafficmanager(TM_PORT)
+    tm.set_synchronous_mode(True)
 
-    # Enable built-in autopilot (Traffic Manager handles navigation)
-    ego.set_autopilot(True)
+    spectator = world.get_spectator()
 
-    # Attach sensors
+    # 2. Spawn Ego and NPCs
+    ego, _ = spawn_ego(world)
+    npc_list = spawn_npc_vehicles(world, n=NPC_VEHICLE_COUNT, tm_port=TM_PORT)
+    
+    # Start driving
+    ego.set_autopilot(True, TM_PORT)
+    autopilot_enabled = True
+
+    # 3. Sensor Setup
+    perception = SegmentationPerception(IMG_W, IMG_H)
     camera = attach_segmentation_camera(world, ego, IMG_W, IMG_H, FOV)
-    collision_sensor = attach_collision_sensor(world, ego)
+    camera.listen(lambda image: perception.on_image(image))
 
-    # Perception + decision modules
-    perception = SegmentationPerception(
-        IMG_W, IMG_H,
-        (ROI_X_MIN, ROI_X_MAX, ROI_Y_MIN, ROI_Y_MAX)
-    )
     supervisor = SafetySupervisor()
-
-    # Metrics
     metrics = MetricsLogger("run_metrics.csv")
 
-    # Start sensors
-    camera.listen(perception.on_image)
-    collision_sensor.listen(metrics.on_collision)
+    collision_sensor = attach_collision_sensor(world, ego)
+    collision_sensor.listen(lambda event: metrics.on_collision(event))
 
-    print(f"RUN_MODE = {RUN_MODE}")
-    print("Autopilot enabled. Stop with Ctrl+C. Output: run_metrics.csv")
+    if not os.path.exists(DEBUG_OUTPUT_DIR):
+        os.makedirs(DEBUG_OUTPUT_DIR)
 
-    start = time.time()
+    print(f"[main] Simulation starting in SYNC mode ({RUN_MODE})...")
+    
+    # Hysteresis for stability
+    clear_streak = 0
+    clear_streak_required = 10 
+    frames_elapsed = 0
+    max_frames = int(RUN_TIME_LIMIT_SEC / LOG_DT_SEC)
 
     try:
-        while True:
-            now = time.time()
-            elapsed = now - start
+        while frames_elapsed < max_frames:
+            # Advance simulation
+            world.tick()
+            frames_elapsed += 1
+            
+            # --- Spectator Follow Logic (Chase Cam) ---
+            ego_tf = ego.get_transform()
+            v_forward = ego_tf.get_forward_vector()
+            # Position: 10m back, 5m up
+            spec_loc = ego_tf.location - v_forward * 10 + carla.Location(z=5)
+            spec_rot = carla.Rotation(pitch=-20, yaw=ego_tf.rotation.yaw, roll=0)
+            spectator.set_transform(carla.Transform(spec_loc, spec_rot))
 
-            # Stop after fixed time (simple, stable experiment design)
-            if elapsed >= RUN_TIME_LIMIT_SEC:
-                print("Time limit reached.")
-                break
+            # --- Perception & Control ---
+            bev_frame = perception.get_bev_map()
+            bev_visual = perception.last_bev_visual
+            speed = get_speed(ego)
 
-            # Latest perception results
-            frame, ratio = perception.get_obstacle_ratio()
+            # Debug Visualization
+            if bev_visual is not None:
+                cv2.imshow("Safety Layer - Bird's Eye View", bev_visual)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
-            # Ego speed
-            speed = vector_length(ego.get_velocity())
-
-            # Decide whether to override autopilot
             override = False
-            brake_val = 0.0
+            roi_lookahead_px = 0
+            min_obstacle_dist_px = None
 
             if RUN_MODE.upper() == "SUPERVISOR":
-                override, override_control = supervisor.decide(ratio)
+                override, control, roi_lookahead_px, min_obstacle_dist_px = supervisor.decide(bev_frame, speed)
+                
                 if override:
-                    ego.apply_control(override_control)
-                    brake_val = override_control.brake
+                    clear_streak = 0
+                    if autopilot_enabled:
+                        ego.set_autopilot(False)
+                        autopilot_enabled = False
+                    ego.apply_control(carla.VehicleControl(brake=1.0, throttle=0.0))
+                else:
+                    clear_streak += 1
+                    if not autopilot_enabled and clear_streak >= clear_streak_required:
+                        ego.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
+                        ego.set_autopilot(True, TM_PORT)
+                        autopilot_enabled = True
 
-            # Collision marker (best-effort based on frame id)
-            collision = int(metrics.last_collision_frame == frame and frame != -1)
-
+            # --- Metrics Logging ---
             metrics.log_step(
-                time_sec=elapsed,
-                frame=frame,
+                time_sec=frames_elapsed * LOG_DT_SEC,
+                frame=world.get_snapshot().frame,
                 speed_mps=speed,
-                obstacle_ratio=ratio,
-                override=override,
-                brake=brake_val,
-                collision=collision
+                obstacle_ratio=0.0, # Using IPM binary check now
+                override=int(override),
+                brake=1.0 if override else 0.0,
+                collision=metrics.consume_collision_flag(),
+                roi_lookahead_px=roi_lookahead_px,
+                min_obstacle_dist_px=min_obstacle_dist_px,
             )
 
-            time.sleep(LOG_DT_SEC)
-
     except KeyboardInterrupt:
-        print("Interrupted by user.")
-
+        print("[main] Stopped by user.")
     finally:
-        # Stop sensors first
-        try:
-            camera.stop()
-        except Exception:
-            pass
-
-        metrics.close()
-
-        # Destroy actors
-        for actor in [collision_sensor, camera, ego]:
+        # Cleanup
+        print("[main] Cleaning up simulation...")
+        # Disable sync mode to avoid freezing the editor
+        settings = world.get_settings()
+        settings.synchronous_mode = False
+        world.apply_settings(settings)
+        
+        camera.stop()
+        collision_sensor.stop()
+        ego.destroy()
+        for npc in npc_list:
             try:
-                actor.destroy()
-            except Exception:
+                npc.destroy()
+            except:
                 pass
-
-        print(f"Finished. Collisions: {metrics.collision_count}, "
-              f"Emergency overrides: {metrics.emergency_override_count}. "
-              f"CSV saved: run_metrics.csv")
-
+        cv2.destroyAllWindows()
+        metrics.close()
+        print(f"[main] Done. Metrics saved to run_metrics.csv")
 
 if __name__ == "__main__":
     main()

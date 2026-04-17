@@ -8,6 +8,7 @@ This module is responsible for:
 - Attaching sensors
 """
 
+import random
 import carla
 from config import HOST, PORT, MAP_NAME
 
@@ -57,8 +58,43 @@ def attach_segmentation_camera(world, ego, w, h, fov):
     cam_bp.set_attribute("image_size_y", str(h))
     cam_bp.set_attribute("fov", str(fov))
 
-    transform = carla.Transform(carla.Location(x=1.5, z=1.6))
+    # Mount the camera at the front of the vehicle with a slight downward pitch.
+    # These extrinsics match the thesis parameters (x=1.6, z=1.7, pitch=-15 deg).
+    transform = carla.Transform(
+        carla.Location(x=1.6, y=0.0, z=1.7),
+        carla.Rotation(pitch=-15.0, yaw=0.0, roll=0.0),
+    )
     return world.spawn_actor(cam_bp, transform, attach_to=ego)
+
+
+def spawn_npc_vehicles(world, n=20, tm_port=8000):
+    """
+    Spawn N NPC vehicles distributed across available spawn points.
+    Each NPC is handed to the Traffic Manager so it drives autonomously.
+    Returns the list of spawned NPC actors so they can be destroyed at cleanup.
+    """
+    bp_lib = world.get_blueprint_library()
+    spawn_points = world.get_map().get_spawn_points()
+    vehicle_bps = [
+        bp for bp in bp_lib.filter("vehicle.*")
+        if int(bp.get_attribute("number_of_wheels")) == 4
+    ]
+
+    if not vehicle_bps or not spawn_points:
+        print("[sim_setup] Warning: no vehicle blueprints or spawn points found for NPCs.")
+        return []
+
+    random.shuffle(spawn_points)
+    npc_list = []
+    for sp in spawn_points[:n]:
+        bp = random.choice(vehicle_bps)
+        actor = world.try_spawn_actor(bp, sp)
+        if actor is not None:
+            actor.set_autopilot(True, tm_port)
+            npc_list.append(actor)
+
+    print(f"[sim_setup] Spawned {len(npc_list)} NPC vehicles.")
+    return npc_list
 
 
 def attach_collision_sensor(world, ego):
