@@ -67,8 +67,12 @@ def main():
     collision_sensor = attach_collision_sensor(world, ego)
     collision_sensor.listen(lambda event: metrics.on_collision(event))
 
-    if not os.path.exists(DEBUG_OUTPUT_DIR):
-        os.makedirs(DEBUG_OUTPUT_DIR)
+    # DEBUG_OUTPUT_DIR is a pathlib.Path in config.py
+    try:
+        DEBUG_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    except AttributeError:
+        # Fallback if DEBUG_OUTPUT_DIR is ever changed to a string
+        os.makedirs(DEBUG_OUTPUT_DIR, exist_ok=True)
 
     print(f"[main] Simulation starting in SYNC mode ({RUN_MODE})...")
     

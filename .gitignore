@@ -1,0 +1,22 @@
+## Obstacle Avoidance (project-local) ignores
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Generated outputs (this project)
+debug_output/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+
