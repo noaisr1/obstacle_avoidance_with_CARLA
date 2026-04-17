@@ -86,7 +86,7 @@ TM_PORT = 8000           # Traffic Manager port (must match CARLA server)
 # Spawn a stopped vehicle ahead in the ego lane to trigger the safety layer.
 SCENARIO_STOPPED_VEHICLE = True
 STOPPED_VEHICLE_DISTANCE_M = 22.0
-DISABLE_EXTRA_NPC_TRAFFIC = True
+DISABLE_EXTRA_NPC_TRAFFIC = False
 
 # Controller/behavior toggles
 # - For a clean thesis safety demonstration, keep lane changes disabled and latch autopilot off
