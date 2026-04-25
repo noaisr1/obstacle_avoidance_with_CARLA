@@ -14,6 +14,7 @@ import numpy as np
 from config import (
     IMG_W, IMG_H, FOV, RUN_MODE, RUN_TIME_LIMIT_SEC, LOG_DT_SEC,
     NPC_VEHICLE_COUNT, TM_PORT, DEBUG_OUTPUT_DIR,
+    DEBUG_SAVE_BEV_EVERY_N, DEBUG_SAVE_BEV_FIRST_N,
     SCENARIO_STOPPED_VEHICLE, STOPPED_VEHICLE_DISTANCE_M, DISABLE_EXTRA_NPC_TRAFFIC,
     STOP_SIM_ON_SUCCESS, SUCCESS_STOP_SPEED_MPS, SUCCESS_HOLD_TIME_SEC,
     EGO_ALLOW_LANE_CHANGE, LATCH_AUTOPILOT_AFTER_OVERRIDE,
@@ -100,6 +101,7 @@ def main():
     clear_streak_required = 10 
     override_latched = False
     success_stop_time = None
+    bev_save_count = 0
     frames_elapsed = 0
     max_frames = int(RUN_TIME_LIMIT_SEC / LOG_DT_SEC)
 
@@ -128,6 +130,43 @@ def main():
                 cv2.imshow("Safety Layer - Bird's Eye View", bev_visual)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
+
+                # Debug snapshots (throttled by config).
+                should_save = (
+                    bev_save_count < int(DEBUG_SAVE_BEV_FIRST_N)
+                    or (
+                        int(DEBUG_SAVE_BEV_EVERY_N) > 0
+                        and bev_save_count % int(DEBUG_SAVE_BEV_EVERY_N) == 0
+                    )
+                )
+                if should_save:
+                    frame_id = world.get_snapshot().frame
+                    # Colored semantic BEV (what you see on screen).
+                    cv2.imwrite(
+                        str(DEBUG_OUTPUT_DIR / f"bev_vis_{frame_id}.png"),
+                        bev_visual,
+                    )
+                    # Binary obstacle BEV used by supervisor.
+                    if bev_frame is not None:
+                        cv2.imwrite(
+                            str(DEBUG_OUTPUT_DIR / f"bev_raw_{frame_id}.png"),
+                            bev_frame,
+                        )
+                    # Pre-warp obstacle mask + decoded label channel (diagnostic).
+                    if perception.last_mask is not None:
+                        cv2.imwrite(
+                            str(DEBUG_OUTPUT_DIR / f"mask_raw_{frame_id}.png"),
+                            perception.last_mask,
+                        )
+                    if perception.last_labels is not None:
+                        labels_vis = cv2.normalize(
+                            perception.last_labels, None, 0, 255, cv2.NORM_MINMAX
+                        ).astype("uint8")
+                        cv2.imwrite(
+                            str(DEBUG_OUTPUT_DIR / f"labels_ch_{frame_id}.png"),
+                            labels_vis,
+                        )
+                bev_save_count += 1
 
             override = False
             roi_lookahead_px = 0

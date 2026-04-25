@@ -21,9 +21,6 @@ IMG_H = 450
 FOV = 90
 
 # Semantic segmentation obstacle label IDs for CARLA 0.9.14+.
-# NOTE: CARLA 0.9.14 renumbered all semantic labels.
-# Old (<=0.9.13): Pedestrians=4, Vehicles=10  <-- frequently cited but WRONG for 0.9.14+
-# Correct (0.9.14+):
 #   12 = Pedestrians, 13 = Rider, 14 = Car, 15 = Truck,
 #   16 = Bus, 18 = Motorcycle, 19 = Bicycle
 OBSTACLE_LABEL_IDS = [12, 13, 14, 15, 16, 18, 19]
@@ -79,7 +76,7 @@ ROI_STEER_WIDTH_GAIN_PX = 260           # additional width at steer=1.0
 ROI_STEER_LPF_ALPHA = 0.25              # low-pass filter for steer (0..1)
 
 # NPC traffic settings
-NPC_VEHICLE_COUNT = 20   # number of NPC vehicles to spawn at startup
+NPC_VEHICLE_COUNT = 40   # number of NPC vehicles to spawn at startup
 TM_PORT = 8000           # Traffic Manager port (must match CARLA server)
 
 # Scenario settings (Option 1: thesis-safe, no overtaking required)
@@ -89,7 +86,6 @@ STOPPED_VEHICLE_DISTANCE_M = 22.0
 DISABLE_EXTRA_NPC_TRAFFIC = False
 
 # Controller/behavior toggles
-# - For a clean thesis safety demonstration, keep lane changes disabled and latch autopilot off
 #   after the first safety trigger (vehicle will stop and stay stopped).
 # - For normal driving behavior (bypass/continue), enable lane changes and do not latch.
 EGO_ALLOW_LANE_CHANGE = True
